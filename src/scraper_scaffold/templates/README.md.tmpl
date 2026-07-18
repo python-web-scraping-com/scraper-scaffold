@@ -1,0 +1,74 @@
+# __PROJECT_NAME__
+
+> A polite-by-default web scraper — **__ENGINE__** + **__PARSER__** (__MODE__).
+
+This project was generated with
+[scraper-scaffold](https://github.com/python-web-scraping-com/scraper-scaffold),
+so it starts from responsible foundations: it identifies itself honestly, obeys
+`robots.txt`, limits its own request rate, retries transient failures politely,
+and caches responses so re-runs don't hammer the target.
+
+## What's inside
+
+__FEATURE_LINKS__
+
+## Setup
+
+```bash
+python -m venv .venv
+. .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+```
+
+Copy the example environment file and edit it — in particular, set an honest
+`USER_AGENT` with a real contact:
+
+```bash
+cp .env.example .env
+```
+
+## Run
+
+```bash
+# Runs the example spider against START_URLS and writes output/results.jsonl
+python -m __PACKAGE_NAME__
+```
+
+Everything is configurable via environment variables (see `.env.example`), e.g.:
+
+```bash
+START_URLS="https://example.com/,https://example.org/" REQUESTS_PER_SECOND=0.5 python -m __PACKAGE_NAME__
+```
+
+## Where to change things
+
+| File | Responsibility |
+| ---- | -------------- |
+| `src/__PACKAGE_NAME__/settings.py` | All tunables (rate, timeout, cache, robots, proxy). |
+| `src/__PACKAGE_NAME__/fetcher.py` | The polite fetch layer (session, rate limit, retries, cache, robots). |
+| `src/__PACKAGE_NAME__/parse.py` | Turn HTML into rows — **edit the selectors here**. |
+| `src/__PACKAGE_NAME__/spider.py` | The crawl loop and entrypoint. |
+| `src/__PACKAGE_NAME__/export.py` | CSV / JSONL writers. |
+
+## Testing
+
+```bash
+pytest
+```
+
+The included smoke tests are offline and deterministic.
+
+## Learn more
+
+New to responsible scraping, or want to go deeper on any piece? These guides
+from [python-web-scraping.com](https://python-web-scraping.com) cover it:
+
+- [The Complete Guide to Python Web Scraping](https://python-web-scraping.com/the-complete-guide-to-python-web-scraping/)
+- [Advanced Scraping & Anti-bot Evasion](https://python-web-scraping.com/advanced-scraping-techniques-anti-bot-evasion/)
+- [Scaling Python Web Scrapers](https://python-web-scraping.com/scaling-python-web-scrapers/)
+- [Storing and exporting scraped data](https://python-web-scraping.com/scaling-python-web-scrapers/storing-and-exporting-scraped-data/)
+
+---
+
+<sub>Scaffolded with scraper-scaffold · responsible-scraping starter kit from
+[python-web-scraping.com](https://python-web-scraping.com).</sub>

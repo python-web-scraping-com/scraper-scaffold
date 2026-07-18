@@ -1,0 +1,52 @@
+"""A simple on-disk HTTP response cache.
+
+Responses are stored as JSON files keyed by a hash of ``method + url``. Re-runs
+read from disk instead of re-hitting the site — friendlier to the target and
+much faster while you iterate on your parse logic.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+from pathlib import Path
+
+from .models import FetchResponse
+
+
+class HTTPCache:
+    """File-backed cache of :class:`FetchResponse` objects."""
+
+    def __init__(self, directory: str | Path, ttl: float = 0.0) -> None:
+        self.directory = Path(directory)
+        self.ttl = ttl
+        self.directory.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, method: str, url: str) -> Path:
+        digest = hashlib.sha256(f"{method.upper()} {url}".encode()).hexdigest()
+        return self.directory / f"{digest}.json"
+
+    def _fresh(self, path: Path) -> bool:
+        if self.ttl <= 0:
+            return True
+        return (time.time() - path.stat().st_mtime) < self.ttl
+
+    def get(self, method: str, url: str) -> FetchResponse | None:
+        """Return a cached response, or ``None`` on a miss / stale entry."""
+        path = self._path(method, url)
+        if not path.exists() or not self._fresh(path):
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        return FetchResponse.from_cache_dict(data)
+
+    def set(self, method: str, response: FetchResponse) -> None:
+        """Store *response* under ``method + response.url``."""
+        path = self._path(method, response.url)
+        path.write_text(
+            json.dumps(response.to_cache_dict(), ensure_ascii=False),
+            encoding="utf-8",
+        )

@@ -1,0 +1,39 @@
+"""Parse layer for __PROJECT_NAME__ (BeautifulSoup 4).
+
+This is an *example* extractor. Replace the selectors in :func:`parse_items`
+with ones that match the site you are scraping.
+"""
+
+from __future__ import annotations
+
+from urllib.parse import urljoin
+
+from bs4 import BeautifulSoup
+
+
+def _soup(html: str) -> BeautifulSoup:
+    # html.parser ships with Python — no extra dependency required.
+    return BeautifulSoup(html, "html.parser")
+
+
+def page_title(html: str) -> str:
+    """Return the document ``<title>``, or an empty string."""
+    title = _soup(html).title
+    return title.get_text(strip=True) if title else ""
+
+
+def parse_items(html: str, base_url: str = "") -> list[dict[str, str]]:
+    """Extract a list of rows from *html*.
+
+    The default implementation pulls every hyperlink with its visible text and
+    resolves relative URLs against *base_url* — a sensible, site-agnostic
+    starting point you can specialize.
+    """
+    rows: list[dict[str, str]] = []
+    for anchor in _soup(html).find_all("a"):
+        href = anchor.get("href")
+        text = anchor.get_text(strip=True)
+        if not href or not text:
+            continue
+        rows.append({"text": text, "url": urljoin(base_url, href)})
+    return rows

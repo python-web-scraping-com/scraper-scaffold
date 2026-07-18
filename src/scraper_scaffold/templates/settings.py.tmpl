@@ -1,0 +1,99 @@
+"""Runtime settings for __PROJECT_NAME__.
+
+Every value can be overridden with an environment variable (see ``.env.example``).
+A ``.env`` file in the project root is loaded automatically if present.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+
+try:  # python-dotenv is optional at runtime.
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:  # pragma: no cover
+    pass
+
+#: An honest, descriptive User-Agent. Edit the contact URL to point at you.
+DEFAULT_USER_AGENT = "__USER_AGENT__"
+
+
+def _env_str(key: str, default: str) -> str:
+    return os.environ.get(key, default)
+
+
+def _env_float(key: str, default: float) -> float:
+    raw = os.environ.get(key)
+    return float(raw) if raw not in (None, "") else default
+
+
+def _env_int(key: str, default: int) -> int:
+    raw = os.environ.get(key)
+    return int(raw) if raw not in (None, "") else default
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    raw = os.environ.get(key)
+    if raw in (None, ""):
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(key: str, default: list[str]) -> list[str]:
+    raw = os.environ.get(key)
+    if raw in (None, ""):
+        return list(default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+@dataclass
+class Settings:
+    """Configuration for the scraper. Instantiate with :meth:`from_env`."""
+
+    user_agent: str = DEFAULT_USER_AGENT
+    #: Maximum sustained request rate (requests per second). Be polite.
+    requests_per_second: float = 1.0
+    #: Token-bucket burst size — how many requests may fire back-to-back.
+    burst: int = 1
+    #: Per-request timeout in seconds.
+    timeout: float = 20.0
+    #: How many times to retry a transient failure (429/5xx/network).
+    max_retries: int = 3
+    #: Honor robots.txt (allowed rules + Crawl-delay). Keep this on.
+    obey_robots: bool = True
+    #: On-disk HTTP response cache.
+    cache_enabled: bool = __CACHE_DEFAULT__
+    cache_dir: str = ".http_cache"
+    #: Cache entry lifetime in seconds; 0 means "never expires".
+    cache_ttl: float = 0.0
+    #: Optional proxy URL, e.g. "http://user:pass@host:port". Empty = no proxy.
+    proxy: str = ""
+    log_level: str = "INFO"
+    output_dir: str = "output"
+    start_urls: list[str] = field(
+        default_factory=lambda: ["https://quotes.toscrape.com/"]
+    )
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        """Build settings from environment variables, falling back to defaults."""
+        defaults = cls()
+        return cls(
+            user_agent=_env_str("USER_AGENT", defaults.user_agent),
+            requests_per_second=_env_float(
+                "REQUESTS_PER_SECOND", defaults.requests_per_second
+            ),
+            burst=_env_int("BURST", defaults.burst),
+            timeout=_env_float("TIMEOUT", defaults.timeout),
+            max_retries=_env_int("MAX_RETRIES", defaults.max_retries),
+            obey_robots=_env_bool("OBEY_ROBOTS", defaults.obey_robots),
+            cache_enabled=_env_bool("CACHE_ENABLED", defaults.cache_enabled),
+            cache_dir=_env_str("CACHE_DIR", defaults.cache_dir),
+            cache_ttl=_env_float("CACHE_TTL", defaults.cache_ttl),
+            proxy=_env_str("PROXY", defaults.proxy),
+            log_level=_env_str("LOG_LEVEL", defaults.log_level),
+            output_dir=_env_str("OUTPUT_DIR", defaults.output_dir),
+            start_urls=_env_list("START_URLS", defaults.start_urls),
+        )

@@ -1,0 +1,204 @@
+"""Fetch layer for __PROJECT_NAME__ (Playwright, asynchronous).
+
+Built with scraper-scaffold — responsible scraping starter (__SITE__).
+
+Renders JavaScript-heavy pages in a headless browser while still being polite:
+a descriptive User-Agent, robots.txt honoring, token-bucket rate limiting,
+retries with exponential backoff + jitter (respecting Retry-After), and an
+optional on-disk response cache.
+
+The fetcher must be created inside a running event loop; use it as an async
+context manager (``async with Fetcher() as f:``). Install the browser once with
+``playwright install chromium``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from urllib.parse import urlparse
+
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import async_playwright
+from tenacity import (
+    AsyncRetrying,
+    before_sleep_log,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
+
+from . import robots
+from .cache import HTTPCache
+from .models import DisallowedByRobots, FetchResponse, TransientHTTPError
+from .ratelimit import RateLimiter
+from .settings import Settings
+
+#: Status codes worth retrying.
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header (delta-seconds or HTTP-date) into seconds."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+def _fetch_robots_text(robots_url: str, user_agent: str, timeout: float) -> str | None:
+    request = urllib.request.Request(robots_url, headers={"User-Agent": user_agent})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, ValueError):
+        return None
+
+
+class Fetcher:
+    """A polite, asynchronous headless-browser fetcher."""
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or Settings.from_env()
+        self.log = logging.getLogger("__PACKAGE_NAME__.fetcher")
+        self.limiter = RateLimiter(self.settings.requests_per_second, self.settings.burst)
+        self.cache = (
+            HTTPCache(self.settings.cache_dir, self.settings.cache_ttl)
+            if self.settings.cache_enabled
+            else None
+        )
+        self._robots: dict[str, robots.RobotsRules] = {}
+        self._backoff = wait_exponential_jitter(initial=1.0, max=30.0)
+        self._playwright = None
+        self._browser = None
+        self._context = None
+
+    # -- public API ---------------------------------------------------------
+
+    async def start(self) -> None:
+        """Launch the browser. Called automatically by ``async with``."""
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.launch(headless=True)
+        context_kwargs: dict[str, object] = {"user_agent": self.settings.user_agent}
+        if self.settings.proxy:
+            context_kwargs["proxy"] = {"server": self.settings.proxy}
+        self._context = await self._browser.new_context(**context_kwargs)
+
+    async def get(self, url: str) -> FetchResponse:
+        """Fetch *url* politely in a headless browser."""
+        await self._check_robots(url)
+
+        if self.cache is not None:
+            cached = self.cache.get("GET", url)
+            if cached is not None:
+                self.log.debug("cache hit", extra={"url": url})
+                return cached
+
+        async for attempt in self._retrying():
+            with attempt:
+                response = await self._fetch(url)
+
+        if self.cache is not None and response.ok:
+            self.cache.set("GET", response)
+        return response
+
+    async def aclose(self) -> None:
+        if self._context is not None:
+            await self._context.close()
+        if self._browser is not None:
+            await self._browser.close()
+        if self._playwright is not None:
+            await self._playwright.stop()
+
+    async def __aenter__(self) -> "Fetcher":
+        await self.start()
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
+
+    # -- internals ----------------------------------------------------------
+
+    def _retrying(self) -> AsyncRetrying:
+        return AsyncRetrying(
+            retry=retry_if_exception_type(TransientHTTPError),
+            wait=self._wait,
+            stop=stop_after_attempt(self.settings.max_retries + 1),
+            reraise=True,
+            before_sleep=before_sleep_log(self.log, logging.WARNING),
+        )
+
+    def _wait(self, retry_state: object) -> float:
+        exc = retry_state.outcome.exception()  # type: ignore[attr-defined]
+        if isinstance(exc, TransientHTTPError) and exc.retry_after is not None:
+            return exc.retry_after
+        return self._backoff(retry_state)
+
+    async def _fetch(self, url: str) -> FetchResponse:
+        await self.limiter.acquire_async()
+        self.log.info("GET", extra={"url": url})
+        page = await self._context.new_page()
+        try:
+            resp = await page.goto(
+                url,
+                timeout=self.settings.timeout * 1000,
+                wait_until="domcontentloaded",
+            )
+            status = resp.status if resp else 0
+            headers = dict(resp.headers) if resp else {}
+            if status in RETRYABLE_STATUS:
+                raise TransientHTTPError(
+                    f"HTTP {status} for {url}",
+                    retry_after=_parse_retry_after(headers.get("retry-after")),
+                )
+            return FetchResponse(
+                url=page.url,
+                status_code=status,
+                text=await page.content(),
+                headers=headers,
+            )
+        except PlaywrightError as exc:
+            raise TransientHTTPError(f"navigation error: {exc}") from exc
+        finally:
+            await page.close()
+
+    async def _check_robots(self, url: str) -> None:
+        if not self.settings.obey_robots:
+            return
+        host = urlparse(url).netloc
+        rules = self._robots.get(host)
+        if rules is None:
+            rules = await self._load_robots(url)
+            self._robots[host] = rules
+            delay = rules.crawl_delay()
+            if delay:
+                self.limiter.set_min_interval(delay)
+                self.log.info("crawl-delay", extra={"host": host, "seconds": delay})
+        if not rules.allowed(url):
+            raise DisallowedByRobots(f"robots.txt disallows {url}")
+
+    async def _load_robots(self, url: str) -> robots.RobotsRules:
+        text = await asyncio.to_thread(
+            _fetch_robots_text,
+            robots.robots_url_for(url),
+            self.settings.user_agent,
+            self.settings.timeout,
+        )
+        if text is None:
+            return robots.allow_all(self.settings.user_agent)
+        return robots.parse_robots(text, self.settings.user_agent)

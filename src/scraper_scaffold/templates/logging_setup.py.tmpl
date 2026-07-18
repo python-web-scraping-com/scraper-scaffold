@@ -1,0 +1,43 @@
+"""Structured logging setup.
+
+Emits one compact ``key=value`` line per event, which is easy to read in a
+terminal and easy to grep or ship to a log aggregator.
+"""
+
+from __future__ import annotations
+
+import logging
+
+
+class KeyValueFormatter(logging.Formatter):
+    """Format records as ``ts=... level=... logger=... msg=... k=v``."""
+
+    _RESERVED = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__)
+
+    def format(self, record: logging.LogRecord) -> str:
+        base = (
+            f"ts={self.formatTime(record, '%Y-%m-%dT%H:%M:%S')} "
+            f"level={record.levelname} "
+            f"logger={record.name} "
+            f'msg="{record.getMessage()}"'
+        )
+        extras = {
+            key: value
+            for key, value in record.__dict__.items()
+            if key not in self._RESERVED and not key.startswith("_")
+        }
+        for key, value in extras.items():
+            base += f" {key}={value}"
+        if record.exc_info:
+            base += "\n" + self.formatException(record.exc_info)
+        return base
+
+
+def configure_logging(level: str = "INFO") -> None:
+    """Install the structured formatter on the root logger (idempotent)."""
+    handler = logging.StreamHandler()
+    handler.setFormatter(KeyValueFormatter())
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level.upper())

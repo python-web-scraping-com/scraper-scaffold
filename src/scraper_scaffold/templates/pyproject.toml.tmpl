@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "__PACKAGE_NAME__"
+version = "0.1.0"
+description = "A polite-by-default web scraper (__ENGINE__ / __PARSER__ / __MODE__), generated with scraper-scaffold."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+keywords = ["web-scraping", "scraper", "__ENGINE__", "__PARSER__"]
+dependencies = [
+__DEPENDENCIES__
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+__PACKAGE_NAME__ = "__PACKAGE_NAME__.spider:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/__PACKAGE_NAME__"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

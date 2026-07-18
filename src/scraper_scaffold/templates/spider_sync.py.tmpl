@@ -1,0 +1,58 @@
+"""Example spider for __PROJECT_NAME__ (synchronous).
+
+Run it with ``python -m __PACKAGE_NAME__`` or the ``__PACKAGE_NAME__`` console
+script. Point ``START_URLS`` at your targets and edit ``parse_items`` in
+``parse.py`` to pull out the fields you care about.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from .export import to_jsonl
+from .fetcher import Fetcher
+from .logging_setup import configure_logging
+from .models import DisallowedByRobots
+from .parse import page_title, parse_items
+from .settings import Settings
+
+log = logging.getLogger("__PACKAGE_NAME__.spider")
+
+
+def crawl(start_urls: list[str], settings: Settings | None = None) -> list[dict]:
+    """Fetch every URL in *start_urls* and return the extracted rows."""
+    settings = settings or Settings.from_env()
+    results: list[dict] = []
+    with Fetcher(settings) as fetcher:
+        for url in start_urls:
+            try:
+                response = fetcher.get(url)
+            except DisallowedByRobots as exc:
+                log.warning("skipped", extra={"url": url, "reason": str(exc)})
+                continue
+            if not response.ok:
+                log.warning(
+                    "bad status", extra={"url": url, "status": response.status_code}
+                )
+                continue
+            title = page_title(response.text)
+            for row in parse_items(response.text, base_url=response.url):
+                row["source_url"] = response.url
+                row["source_title"] = title
+                results.append(row)
+    return results
+
+
+def main() -> None:
+    settings = Settings.from_env()
+    configure_logging(settings.log_level)
+    log.info("start", extra={"urls": len(settings.start_urls)})
+    rows = crawl(settings.start_urls, settings)
+    output = Path(settings.output_dir) / "results.jsonl"
+    to_jsonl(rows, output)
+    log.info("done", extra={"rows": len(rows), "output": str(output)})
+
+
+if __name__ == "__main__":
+    main()

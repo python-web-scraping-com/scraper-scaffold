@@ -1,0 +1,55 @@
+"""Shared data structures for the fetch layer."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class FetchResponse:
+    """A normalized HTTP response, independent of the underlying engine."""
+
+    url: str
+    status_code: int
+    text: str
+    headers: dict[str, str] = field(default_factory=dict)
+    from_cache: bool = False
+
+    @property
+    def ok(self) -> bool:
+        """True for 2xx/3xx responses."""
+        return self.status_code < 400
+
+    def to_cache_dict(self) -> dict[str, object]:
+        return {
+            "url": self.url,
+            "status_code": self.status_code,
+            "text": self.text,
+            "headers": self.headers,
+        }
+
+    @classmethod
+    def from_cache_dict(cls, data: dict[str, object]) -> "FetchResponse":
+        return cls(
+            url=str(data["url"]),
+            status_code=int(data["status_code"]),  # type: ignore[arg-type]
+            text=str(data["text"]),
+            headers=dict(data.get("headers") or {}),  # type: ignore[arg-type]
+            from_cache=True,
+        )
+
+
+class DisallowedByRobots(Exception):
+    """Raised when robots.txt disallows fetching a URL."""
+
+
+class TransientHTTPError(Exception):
+    """A retryable HTTP failure (e.g. 429/503 or a network blip).
+
+    Carries an optional ``retry_after`` (seconds) parsed from the response so
+    the retry policy can wait exactly as long as the server asked.
+    """
+
+    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after

@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scraper-scaffold"
+version = "0.1.0"
+description = "Generate a polite-by-default Python web scraper project — like create-react-app, but for scrapers."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [
+    { name = "python-web-scraping.com", email = "info@python-web-scraping.com" },
+]
+keywords = [
+    "web-scraping",
+    "scraper",
+    "scaffold",
+    "generator",
+    "boilerplate",
+    "robots-txt",
+    "rate-limiting",
+    "cli",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.urls]
+Homepage = "https://python-web-scraping.com"
+Repository = "https://github.com/python-web-scraping-com/scraper-scaffold"
+Issues = "https://github.com/python-web-scraping-com/scraper-scaffold/issues"
+
+[project.scripts]
+scraper-scaffold = "scraper_scaffold.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scraper_scaffold"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/scraper_scaffold/templates" = "scraper_scaffold/templates"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

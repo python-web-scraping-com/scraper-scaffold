@@ -1,0 +1,46 @@
+"""robots.txt parsing built on the standard library.
+
+The fetcher is responsible for *retrieving* robots.txt (using whichever engine
+it speaks); this module only parses the text and answers questions about it, so
+it stays engine-agnostic and trivially testable offline.
+"""
+
+from __future__ import annotations
+
+from urllib.parse import urljoin, urlparse
+from urllib.robotparser import RobotFileParser
+
+
+def robots_url_for(url: str) -> str:
+    """Return the robots.txt URL for the host of *url*."""
+    parsed = urlparse(url)
+    return urljoin(f"{parsed.scheme}://{parsed.netloc}", "/robots.txt")
+
+
+class RobotsRules:
+    """Answers *allowed?* and *crawl-delay?* for a single host."""
+
+    def __init__(self, parser: RobotFileParser, user_agent: str) -> None:
+        self._parser = parser
+        self._user_agent = user_agent
+
+    def allowed(self, url: str) -> bool:
+        return self._parser.can_fetch(self._user_agent, url)
+
+    def crawl_delay(self) -> float | None:
+        delay = self._parser.crawl_delay(self._user_agent)
+        return float(delay) if delay is not None else None
+
+
+def parse_robots(text: str, user_agent: str) -> RobotsRules:
+    """Parse robots.txt *text* into :class:`RobotsRules`."""
+    parser = RobotFileParser()
+    parser.parse(text.splitlines())
+    return RobotsRules(parser, user_agent)
+
+
+def allow_all(user_agent: str) -> RobotsRules:
+    """Rules that permit everything (used when robots.txt is missing)."""
+    parser = RobotFileParser()
+    parser.parse([])  # empty ruleset allows all paths
+    return RobotsRules(parser, user_agent)

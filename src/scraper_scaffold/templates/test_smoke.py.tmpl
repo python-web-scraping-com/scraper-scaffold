@@ -1,0 +1,81 @@
+"""Smoke tests for __PROJECT_NAME__.
+
+Offline and deterministic — no network access. These exercise the parse layer,
+cache, rate limiter, robots parsing and export helpers. The fetch layer itself
+is best covered with a mocked HTTP client (see the guides in the README).
+"""
+
+from __future__ import annotations
+
+from __PACKAGE_NAME__ import robots
+from __PACKAGE_NAME__.cache import HTTPCache
+from __PACKAGE_NAME__.export import to_csv, to_jsonl
+from __PACKAGE_NAME__.models import FetchResponse
+from __PACKAGE_NAME__.parse import page_title, parse_items
+from __PACKAGE_NAME__.ratelimit import RateLimiter
+
+SAMPLE_HTML = """
+<html>
+  <head><title>Example</title></head>
+  <body>
+    <a href="/a">First</a>
+    <a href="https://example.com/b">Second</a>
+    <a href="/empty"></a>
+  </body>
+</html>
+"""
+
+
+def test_page_title():
+    assert page_title(SAMPLE_HTML) == "Example"
+
+
+def test_parse_items_extracts_links():
+    rows = parse_items(SAMPLE_HTML, base_url="https://example.com/")
+    urls = {row["url"] for row in rows}
+    assert "https://example.com/a" in urls
+    assert "https://example.com/b" in urls
+    # Anchors with no visible text are skipped.
+    assert len(rows) == 2
+    assert all(row["text"] for row in rows)
+
+
+def test_cache_roundtrip(tmp_path):
+    cache = HTTPCache(tmp_path)
+    assert cache.get("GET", "https://example.com/") is None
+
+    response = FetchResponse(
+        url="https://example.com/", status_code=200, text="hello", headers={"x": "y"}
+    )
+    cache.set("GET", response)
+
+    cached = cache.get("GET", "https://example.com/")
+    assert cached is not None
+    assert cached.text == "hello"
+    assert cached.from_cache is True
+
+
+def test_rate_limiter_allows_burst():
+    limiter = RateLimiter(rate=1000.0, burst=5)
+    for _ in range(5):
+        limiter.acquire()  # within burst: effectively instant
+
+
+def test_robots_rules():
+    rules = robots.parse_robots(
+        "User-agent: *\nDisallow: /private/\nCrawl-delay: 2\n", "test-agent"
+    )
+    assert rules.allowed("https://example.com/public") is True
+    assert rules.allowed("https://example.com/private/page") is False
+    assert rules.crawl_delay() == 2.0
+
+
+def test_export(tmp_path):
+    rows = [{"a": 1, "b": 2}, {"a": 3}]
+
+    jsonl_path = to_jsonl(rows, tmp_path / "out.jsonl")
+    assert jsonl_path.exists()
+    assert jsonl_path.read_text().count("\n") == 2
+
+    csv_path = to_csv(rows, tmp_path / "out.csv")
+    assert csv_path.read_text().splitlines()[0] == "a,b"

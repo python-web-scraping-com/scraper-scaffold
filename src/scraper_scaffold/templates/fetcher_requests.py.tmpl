@@ -1,0 +1,163 @@
+"""Fetch layer for __PROJECT_NAME__ (requests, synchronous).
+
+Built with scraper-scaffold — responsible scraping starter (__SITE__).
+
+Bakes in the things a polite scraper needs: a persistent session with a
+descriptive User-Agent, robots.txt honoring, token-bucket rate limiting,
+retries with exponential backoff + jitter (respecting Retry-After), and an
+optional on-disk response cache.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from urllib.parse import urlparse
+
+import requests
+from tenacity import (
+    Retrying,
+    before_sleep_log,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
+
+from . import robots
+from .cache import HTTPCache
+from .models import DisallowedByRobots, FetchResponse, TransientHTTPError
+from .ratelimit import RateLimiter
+from .settings import Settings
+
+#: Status codes worth retrying.
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header (delta-seconds or HTTP-date) into seconds."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+class Fetcher:
+    """A polite, synchronous HTTP fetcher."""
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or Settings.from_env()
+        self.log = logging.getLogger("__PACKAGE_NAME__.fetcher")
+        self.limiter = RateLimiter(self.settings.requests_per_second, self.settings.burst)
+        self.cache = (
+            HTTPCache(self.settings.cache_dir, self.settings.cache_ttl)
+            if self.settings.cache_enabled
+            else None
+        )
+        self._robots: dict[str, robots.RobotsRules] = {}
+        self._backoff = wait_exponential_jitter(initial=1.0, max=30.0)
+        self._session = requests.Session()
+        self._session.headers.update({"User-Agent": self.settings.user_agent})
+        if self.settings.proxy:
+            self._session.proxies.update(
+                {"http": self.settings.proxy, "https": self.settings.proxy}
+            )
+
+    # -- public API ---------------------------------------------------------
+
+    def get(self, url: str) -> FetchResponse:
+        """Fetch *url* politely, returning a :class:`FetchResponse`."""
+        self._check_robots(url)
+
+        if self.cache is not None:
+            cached = self.cache.get("GET", url)
+            if cached is not None:
+                self.log.debug("cache hit", extra={"url": url})
+                return cached
+
+        response = self._retrying()(self._fetch, url)
+
+        if self.cache is not None and response.ok:
+            self.cache.set("GET", response)
+        return response
+
+    def close(self) -> None:
+        self._session.close()
+
+    def __enter__(self) -> "Fetcher":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    # -- internals ----------------------------------------------------------
+
+    def _retrying(self) -> Retrying:
+        return Retrying(
+            retry=retry_if_exception_type(TransientHTTPError),
+            wait=self._wait,
+            stop=stop_after_attempt(self.settings.max_retries + 1),
+            reraise=True,
+            before_sleep=before_sleep_log(self.log, logging.WARNING),
+        )
+
+    def _wait(self, retry_state: object) -> float:
+        exc = retry_state.outcome.exception()  # type: ignore[attr-defined]
+        if isinstance(exc, TransientHTTPError) and exc.retry_after is not None:
+            return exc.retry_after
+        return self._backoff(retry_state)
+
+    def _fetch(self, url: str) -> FetchResponse:
+        self.limiter.acquire()
+        self.log.info("GET", extra={"url": url})
+        try:
+            resp = self._session.get(url, timeout=self.settings.timeout)
+        except requests.RequestException as exc:
+            raise TransientHTTPError(f"network error: {exc}") from exc
+        if resp.status_code in RETRYABLE_STATUS:
+            raise TransientHTTPError(
+                f"HTTP {resp.status_code} for {url}",
+                retry_after=_parse_retry_after(resp.headers.get("Retry-After")),
+            )
+        return FetchResponse(
+            url=resp.url,
+            status_code=resp.status_code,
+            text=resp.text,
+            headers=dict(resp.headers),
+        )
+
+    def _check_robots(self, url: str) -> None:
+        if not self.settings.obey_robots:
+            return
+        host = urlparse(url).netloc
+        rules = self._robots.get(host)
+        if rules is None:
+            rules = self._load_robots(url)
+            self._robots[host] = rules
+            delay = rules.crawl_delay()
+            if delay:
+                self.limiter.set_min_interval(delay)
+                self.log.info("crawl-delay", extra={"host": host, "seconds": delay})
+        if not rules.allowed(url):
+            raise DisallowedByRobots(f"robots.txt disallows {url}")
+
+    def _load_robots(self, url: str) -> robots.RobotsRules:
+        robots_url = robots.robots_url_for(url)
+        try:
+            resp = self._session.get(robots_url, timeout=self.settings.timeout)
+        except requests.RequestException:
+            return robots.allow_all(self.settings.user_agent)
+        if resp.status_code == 200:
+            return robots.parse_robots(resp.text, self.settings.user_agent)
+        return robots.allow_all(self.settings.user_agent)
