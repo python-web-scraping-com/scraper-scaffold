@@ -57,10 +57,10 @@ Issues = "https://github.com/python-web-scraping-com/scraper-scaffold/issues"
 scraper-scaffold = "scraper_scaffold.cli:main"
 
 [tool.hatch.build.targets.wheel]
+# The package dir already carries the *.tmpl template files, so they ship with
+# `packages` below — do not also force-include them, or hatchling errors on a
+# duplicate wheel entry (a second file at the same archive path).
 packages = ["src/scraper_scaffold"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/scraper_scaffold/templates" = "scraper_scaffold/templates"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
